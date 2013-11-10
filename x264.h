@@ -219,6 +219,7 @@ typedef struct x264_nal_t
 #define X264_B_PYRAMID_NORMAL        2
 #define X264_KEYINT_MIN_AUTO         0
 #define X264_KEYINT_MAX_INFINITE     (1<<30)
+#define X264_KEYINT_MAX_AUTO         (-1)
 #define X264_LEVEL_IDC_AUTO          (-1)
 
 /* AVC-Intra flavors */

@@ -1217,6 +1217,8 @@ if [ "$swscale" = "yes" ]; then
     fi
 fi
 
+# you should make install lsmash first via https://github.com/l-smash/l-smash.git
+# and then export $PKG_CONFIG_PATH to where liblsmash.pc exists.
 if [ "$lsmash" = "auto" ] ; then
     lsmash="no"
     if pkg_check liblsmash ; then
@@ -1622,6 +1624,7 @@ LTO:           $lto
 PIC:           $pic
 bit depth:     $bit_depth
 chroma format: $chroma_format
+lsmash:        $lsmash
 EOF
 
 echo >> config.log

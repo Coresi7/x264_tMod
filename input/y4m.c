@@ -1,7 +1,7 @@
 /*****************************************************************************
  * y4m.c: y4m input
  *****************************************************************************
- * Copyright (C) 2003-2020 x264 project
+ * Copyright (C) 2003-2023 x264 project
  *
  * Authors: Laurent Aimar <fenrir@via.ecp.fr>
  *          Loren Merritt <lorenm@u.washington.edu>
@@ -39,13 +39,11 @@ typedef struct
     int bit_depth;
     cli_mmap_t mmap;
     int use_mmap;
-    int desired_bit_depth;
 } y4m_hnd_t;
 
 #define Y4M_MAGIC "YUV4MPEG2"
-#define MAX_YUV4_HEADER 80
 #define Y4M_FRAME_MAGIC "FRAME"
-#define MAX_FRAME_HEADER 80
+#define Y4M_MAX_HEADER 256
 
 static int parse_csp_and_depth( char *csp_name, int *bit_depth )
 {
@@ -74,12 +72,11 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     y4m_hnd_t *h = calloc( 1, sizeof(y4m_hnd_t) );
     int i;
     uint32_t n, d;
-    char header[MAX_YUV4_HEADER+10];
+    char header[Y4M_MAX_HEADER+10];
     char *tokend, *header_end;
     int colorspace = X264_CSP_NONE;
     int alt_colorspace = X264_CSP_NONE;
     int alt_bit_depth  = 8;
-    info->num_frames  = 0;
     if( !h )
         return -1;
 
@@ -93,7 +90,7 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
         return -1;
 
     /* Read header */
-    for( i = 0; i < MAX_YUV4_HEADER; i++ )
+    for( i = 0; i < Y4M_MAX_HEADER; i++ )
     {
         header[i] = fgetc( h->fh );
         if( header[i] == '\n' )
@@ -106,7 +103,7 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
         }
     }
     FAIL_IF_ERROR( strncmp( header, Y4M_MAGIC, sizeof(Y4M_MAGIC)-1 ), "bad sequence header magic\n" );
-    FAIL_IF_ERROR( i == MAX_YUV4_HEADER, "bad sequence header length\n" );
+    FAIL_IF_ERROR( i == Y4M_MAX_HEADER, "bad sequence header length\n" );
 
     /* Scan properties */
     header_end = &header[i+1]; /* Include space */
@@ -152,8 +149,6 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
             case 'F': /* Frame rate - 0:0 if unknown */
                 if( sscanf( tokstart, "%u:%u", &n, &d ) == 2 && n && d )
                 {
-                    if( !opt->b_accurate_fps )
-                        x264_ntsc_fps( &n, &d );
                     x264_reduce_fraction( &n, &d );
                     info->fps_num = n;
                     info->fps_den = d;
@@ -177,11 +172,14 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
                     tokstart += 6;
                     alt_colorspace = parse_csp_and_depth( tokstart, &alt_bit_depth );
                 }
-                else if( !strncmp( "LENGTH=", tokstart, 7 ) )
+                else if( !strncmp( "COLORRANGE=", tokstart, 11 ) )
                 {
-                    tokstart += 7;
-                    info->num_frames = strtol( tokstart, &tokend, 10 );
-                    tokstart = tokend;
+                    /* ffmpeg's color range extension */
+                    tokstart += 11;
+                    if( !strncmp( "FULL", tokstart, 4 ) )
+                        info->fullrange = 1;
+                    else if( !strncmp( "LIMITED", tokstart, 7 ) )
+                        info->fullrange = 0;
                 }
                 tokstart = strchr( tokstart, 0x20 );
                 break;
@@ -205,18 +203,11 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     FAIL_IF_ERROR( h->bit_depth < 8 || h->bit_depth > 16, "unsupported bit depth `%d'\n", h->bit_depth );
 
     info->thread_safe = 1;
+    info->num_frames  = 0;
     info->csp         = colorspace;
 
-    h->desired_bit_depth = opt->desired_bit_depth;
     if( h->bit_depth > 8 )
-    {
         info->csp |= X264_CSP_HIGH_DEPTH;
-        if( h->bit_depth == h->desired_bit_depth )
-        {
-            /* HACK: totally skips depth filter to prevent dither error */
-            info->csp |= X264_CSP_SKIP_DEPTH_FILTER;
-        }
-    }
 
     const x264_cli_csp_t *csp = x264_cli_get_csp( info->csp );
 
@@ -234,9 +225,9 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
 
         /* Find out the length of the frame header */
         size_t len = 1;
-        while( len <= MAX_FRAME_HEADER && fgetc( h->fh ) != '\n' )
+        while( len <= Y4M_MAX_HEADER && fgetc( h->fh ) != '\n' )
             len++;
-        FAIL_IF_ERROR( len > MAX_FRAME_HEADER || len < sizeof(Y4M_FRAME_MAGIC), "bad frame header length\n" );
+        FAIL_IF_ERROR( len > Y4M_MAX_HEADER || len < sizeof(Y4M_FRAME_MAGIC), "bad frame header length\n" );
         h->frame_header_len = len;
         h->frame_size += len;
 
@@ -281,9 +272,9 @@ static int read_frame_internal( cli_pic_t *pic, y4m_hnd_t *h, int bit_depth_uc )
         header = header_buf;
         if( fread( header, 1, slen, h->fh ) != slen )
             return -1;
-        while( i <= MAX_FRAME_HEADER && fgetc( h->fh ) != '\n' )
+        while( i <= Y4M_MAX_HEADER && fgetc( h->fh ) != '\n' )
             i++;
-        FAIL_IF_ERROR( i > MAX_FRAME_HEADER, "bad frame header length\n" );
+        FAIL_IF_ERROR( i > Y4M_MAX_HEADER, "bad frame header length\n" );
     }
     FAIL_IF_ERROR( memcmp( header, Y4M_FRAME_MAGIC, slen ), "bad frame header magic\n" );
 
@@ -297,7 +288,7 @@ static int read_frame_internal( cli_pic_t *pic, y4m_hnd_t *h, int bit_depth_uc )
         else if( fread( pic->img.plane[i], pixel_depth, h->plane_size[i], h->fh ) != (uint64_t)h->plane_size[i] )
             return -1;
 
-        if( bit_depth_uc && h->bit_depth != h->desired_bit_depth )
+        if( bit_depth_uc )
         {
             /* upconvert non 16bit high depth planes to 16bit using the same
              * algorithm as used in the depth filter. */
